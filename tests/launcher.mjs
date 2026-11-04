@@ -12,32 +12,47 @@ const shadowRoot = {querySelectorAll: selector => {
   assert.equal(selector, '#container > canvas');
   return [webglCanvas];
 }};
-for (const [page, mode, movie] of [['index.html', 'game', '/client.swf'], ['draw.html', 'editor', '/native-texture-editor.swf']]) {
-  test(`${page} explicitly loads ${movie} through the shared protected launcher`, async () => {
+for (const protocol of ['http:', 'https:']) for (const prefix of ['/', `/_runtime/${'a'.repeat(64)}/`])
+for (const [page, mode, movie] of [['index.html', 'game', 'client.swf'], ['draw.html', 'editor', 'native-texture-editor.swf']]) {
+  test(`UNIT ONLY: ${mode} at ${protocol}//127.0.0.1:18923${prefix} loads prefix-relative ${movie} with protected options`, async () => {
     const html = await readFile(new URL(`../${page}`, import.meta.url), 'utf8');
     assert.ok(html.includes(`data-mode="${mode}"`));
     assert.ok(html.includes('<script src="launcher.js"></script>'));
     const gameplay = await readFile(new URL('../index.html', import.meta.url), 'utf8');
     assert.equal(html.match(/content="default-src[^"]+"/)[0], gameplay.match(/content="default-src[^"]+"/)[0]);
     let options;
+    const errors = [], origin = `${protocol}//127.0.0.1:18923`;
+    const location = new URL(`${origin}${prefix}${mode === 'game' ? '' : page}?url=https://evil.example/a.swf`);
     const player = {shadowRoot, addEventListener() {}, ruffle: () => ({load: async value => {options = value;}})};
-    const nodes = {'#client': {dataset: {mode}, append() {}}, '#status': {}};
+    const nodes = {'#client': {dataset: {mode}, append() {}, replaceChildren() {}}, '#status': {}};
     await vm.runInNewContext(script, {window: {addEventListener() {}, RufflePlayer: {newest: () => ({createPlayer: () => player})}},
-      document: {createElement: () => webglCanvas, querySelector: key => nodes[key]}, URL, location: {href: `http://127.0.0.1:18923/${page}?url=https://evil.example/a.swf`}});
+      document: {createElement: () => webglCanvas, querySelector: key => nodes[key]}, URL, location, console: {error: error => errors.push(error)}});
+    assert.deepEqual(errors, []);
     assert.equal(nodes['#status'].textContent, '');
     assert.equal(options.preferredRenderer, 'wgpu-webgl');
     assert.equal(options.url, movie);
+    assert.equal(new URL(options.url, location.href).href, `${origin}${prefix}${movie}`);
+    assert.equal(options.autoplay, 'on');
+    assert.equal(options.unmuteOverlay, 'hidden');
+    assert.equal(options.logLevel, 'info');
     assert.equal(options.contextMenu, mode === 'game' ? 'off' : 'on');
     assert.equal(options.allowScriptAccess, false);
     assert.equal(options.openUrlMode, mode === 'game' ? 'confirm' : 'deny');
-    assert.equal(options.socketProxy[0].proxyUrl, 'ws://127.0.0.1:18923/game');
-    assert.equal(options.urlRewriteRules[0][1], 'http://127.0.0.1:18923/legacy-api/');
-    assert.equal(options.urlRewriteRules[1][1], 'http://127.0.0.1:18923/sfx/');
+    assert.equal(options.socketProxy.length, 1);
+    assert.equal(options.socketProxy[0].host, '127.0.0.1');
+    assert.equal(options.socketProxy[0].port, 2050);
+    assert.equal(options.socketProxy[0].proxyUrl, `${protocol === 'https:' ? 'wss:' : 'ws:'}//127.0.0.1:18923/game`);
+    assert.equal(options.urlRewriteRules.length, 2);
+    assert.equal(options.urlRewriteRules[0][1], `${origin}/legacy-api/`);
+    assert.equal(options.urlRewriteRules[1][1], `${origin}${prefix}sfx/`);
     const rewrite = url => options.urlRewriteRules.reduce((value, [pattern, replacement]) => value.replace(pattern, replacement), url);
     for (const protocol of ['http', 'https']) {
       for (const family of ['char/list', 'account/verify', 'fame/list', 'guild/listMembers', 'picture/save', 'picture/list', 'picture/get', 'picture/delete']) {
-        assert.equal(rewrite(`${protocol}://127.0.0.1:8080/${family}`), `http://127.0.0.1:18923/legacy-api/${family}`);
+        assert.equal(rewrite(`${protocol}://127.0.0.1:8080/${family}`), `${origin}/legacy-api/${family}`);
       }
+    }
+    for (const scheme of ['http', 'https']) {
+      assert.equal(rewrite(`${scheme}://realmofthemadgod.appspot.com/sfx/death.mp3`), `${origin}${prefix}sfx/death.mp3`);
     }
     for (const path of ['/client.swf', '/native-texture-editor.swf', '/vendor/ruffle.js', '/draw.html', '/game']) {
       assert.equal(rewrite('http://127.0.0.1:8080' + path), 'http://127.0.0.1:8080' + path);
